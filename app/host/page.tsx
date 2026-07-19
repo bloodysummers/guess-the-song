@@ -43,6 +43,7 @@ export default function HostPage() {
   const [error, setError] = useState<string | null>(null);
   const [roundError, setRoundError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [judging, setJudging] = useState(false);
   const [answer, setAnswer] = useState<AnswerReference | null>(null);
 
   const [hostName, setHostName] = useState("");
@@ -182,12 +183,15 @@ export default function HostPage() {
   }
 
   async function handleJudge(verdict: Verdict) {
-    if (!round.roundId || !round.currentAnswererId) return;
+    if (!round.roundId || !round.currentAnswererId || judging) return;
     setRoundError(null);
+    setJudging(true);
     try {
       await transport.judge({ roundId: round.roundId, playerId: round.currentAnswererId, verdict });
     } catch (err) {
       setRoundError(errorMessage(err));
+    } finally {
+      setJudging(false);
     }
   }
 
@@ -360,10 +364,15 @@ export default function HostPage() {
                 🎤 Responde: <strong>{nameOf(round.currentAnswererId)}</strong>
               </p>
               <div className="controls">
-                <button type="button" onClick={() => handleJudge("correct")}>
+                <button type="button" onClick={() => handleJudge("correct")} disabled={judging}>
                   Correcto
                 </button>
-                <button type="button" className="secondary" onClick={() => handleJudge("incorrect")}>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => handleJudge("incorrect")}
+                  disabled={judging}
+                >
                   Incorrecto
                 </button>
               </div>

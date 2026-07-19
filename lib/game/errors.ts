@@ -10,6 +10,12 @@ const MESSAGES: Record<string, string> = {
   session_over: "La partida ya terminó.",
   playlist_exhausted: "No quedan más canciones en la playlist.",
   not_host: "Solo el presentador puede hacer esto.",
+  not_answering: "La ronda ya se resolvió.",
+  not_current_answerer: "Ese jugador ya no tiene el turno.",
+  round_not_found: "No se encontró la ronda.",
+  no_active_game: "No hay un juego activo.",
+  game_not_found: "No se encontró el juego.",
+  session_closed: "La sesión está cerrada.",
 };
 
 export function errorMessage(err: unknown): string {
