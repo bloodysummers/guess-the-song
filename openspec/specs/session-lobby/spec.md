@@ -5,15 +5,16 @@ TBD - created by archiving change add-lobby. Update Purpose after archive.
 ## Requirements
 ### Requirement: Host creates a session
 
-The system SHALL let a host create a session by choosing a playlist and a difficulty
-configuration. The session SHALL start in `lobby` status with the creator recorded as a
-non-scoring host participant.
+The system SHALL let a host create a session as a hub, WITHOUT choosing a playlist or game
+configuration. The session SHALL start `open` with the creator recorded as a non-scoring
+host participant. Game configuration happens later, when the host starts a game (see
+`game-lifecycle`).
 
-#### Scenario: Session is created in lobby
+#### Scenario: Session is created open
 
-- **WHEN** a host creates a session with a valid playlist and config
-- **THEN** a new session is created in `lobby` status and a host player is created with
-  `is_host = true`
+- **WHEN** a host creates a session
+- **THEN** a new session is created with status `open` and a host player with `is_host = true`,
+  and no game exists yet
 
 #### Scenario: Create returns identifiers
 

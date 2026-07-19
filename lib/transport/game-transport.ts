@@ -44,9 +44,6 @@ export class TransportError extends Error {
 
 export interface CreateSessionInput {
   hostName: string;
-  playlistId: string;
-  config: SessionConfig;
-  roundsTotal?: number;
 }
 
 export interface CreateSessionResult {
@@ -55,6 +52,16 @@ export interface CreateSessionResult {
   hostPlayerId: string;
   /** Token persisted by the client to reconnect as the same participant. */
   reconnectToken: string;
+}
+
+export interface CreateGameInput {
+  playlistId: string;
+  config: SessionConfig;
+  roundsTotal?: number;
+}
+
+export interface CreateGameResult {
+  gameId: string;
 }
 
 export interface JoinSessionInput {
@@ -90,6 +97,10 @@ export interface BuzzInput {
   roundId: string;
 }
 
+export interface ReplayInput {
+  roundId: string;
+}
+
 export interface JudgeInput {
   roundId: string;
   playerId: string;
@@ -104,9 +115,6 @@ export interface JudgeInput {
 export interface GameEventMap {
   session_updated: {
     status: SessionStatus;
-    config: SessionConfig;
-    roundsTotal: number;
-    currentRoundNumber: number | null;
   };
   player_joined: { player: PlayerPublic };
   player_left: { playerId: string };
@@ -140,6 +148,7 @@ export interface GameEventMap {
     queue: BuzzQueueEntry[];
     currentAnswererId: string | null;
   };
+  round_replayed: { roundId: string; replayCount: number };
   answer_judged: {
     roundId: string;
     playerId: string;
@@ -153,7 +162,10 @@ export interface GameEventMap {
     winnerPlayerId: string | null;
     revealedAnswer: RevealedAnswer;
   };
-  score_updated: { scores: ScoreEntry[] };
+  /** A new game started in the session. */
+  game_started: { gameId: string; roundsTotal: number; config: SessionConfig };
+  /** Current game's scoreboard and the session's cumulative totals. */
+  score_updated: { gameScores: ScoreEntry[]; sessionTotals: ScoreEntry[] };
   game_ended: { podium: PodiumEntry[] };
   error: { code: string; message: string };
 }
@@ -180,13 +192,18 @@ export interface GameTransport {
   joinSession(input: JoinSessionInput): Promise<JoinSessionResult>;
   /** Rejoin an active session with a stored identity (reconnection). */
   resume(input: ResumeInput): Promise<ResumeResult>;
+  /** Host starts a new game within the session. */
+  createGame(input: CreateGameInput): Promise<CreateGameResult>;
+  /** Host ends the current game (returns the session to the hub). */
+  endGame(): Promise<Ack>;
+  /** Host closes the session for everyone. */
+  closeSession(): Promise<Ack>;
   startRound(): Promise<StartRoundResult>;
   buzz(input: BuzzInput): Promise<Ack>;
+  /** Host replays the audio window before any buzz (applies a scoring penalty). */
+  replayRound(input: ReplayInput): Promise<Ack>;
   judge(input: JudgeInput): Promise<Ack>;
   nextRound(): Promise<StartRoundResult>;
-  endGame(): Promise<Ack>;
-  /** Host restarts the game with the same players (scores reset, back to lobby). */
-  restart(): Promise<Ack>;
   leave(): Promise<Ack>;
 
   // Event subscription

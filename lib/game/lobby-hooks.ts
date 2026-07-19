@@ -87,6 +87,7 @@ export interface RoundState {
   resolution: RoundResolution | null;
   winnerPlayerId: string | null;
   revealedAnswer: RevealedAnswer | null;
+  replayCount: number;
 }
 
 const EMPTY_ROUND: RoundState = {
@@ -98,6 +99,7 @@ const EMPTY_ROUND: RoundState = {
   resolution: null,
   winnerPlayerId: null,
   revealedAnswer: null,
+  replayCount: 0,
 };
 
 /** Tracks the active round, its buzz queue, and its resolution from transport events. */
@@ -152,13 +154,24 @@ export function useRoundState(transport: GameTransport, resetKey: number = 0): R
       );
     };
 
+    const onReplayed = ({ roundId, replayCount }: { roundId: string; replayCount: number }) => {
+      setState((s) => (s.roundId === roundId ? { ...s, replayCount } : s));
+    };
+
+    // A new game clears any stale round state from the previous game.
+    const onGameStarted = () => setState(EMPTY_ROUND);
+
     transport.on("round_started", onRound);
     transport.on("buzz_queue_updated", onQueue);
     transport.on("round_ended", onEnded);
+    transport.on("round_replayed", onReplayed);
+    transport.on("game_started", onGameStarted);
     return () => {
       transport.off("round_started", onRound);
       transport.off("buzz_queue_updated", onQueue);
       transport.off("round_ended", onEnded);
+      transport.off("round_replayed", onReplayed);
+      transport.off("game_started", onGameStarted);
     };
   }, [transport]);
 
@@ -167,21 +180,18 @@ export function useRoundState(transport: GameTransport, resetKey: number = 0): R
 
 export interface SessionState {
   status: SessionStatus | null;
-  roundsTotal: number | null;
 }
 
-/** Tracks session status and configured round count from session_updated events. */
+/** Tracks the session hub status (open/closed). */
 export function useSession(transport: GameTransport, resetKey: number = 0): SessionState {
-  const [state, setState] = useState<SessionState>({ status: null, roundsTotal: null });
+  const [state, setState] = useState<SessionState>({ status: null });
 
   useEffect(() => {
-    setState({ status: null, roundsTotal: null });
+    setState({ status: null });
   }, [resetKey]);
 
   useEffect(() => {
-    const onSession = ({ status, roundsTotal }: { status: SessionStatus; roundsTotal: number }) => {
-      setState({ status, roundsTotal });
-    };
+    const onSession = ({ status }: { status: SessionStatus }) => setState({ status });
     transport.on("session_updated", onSession);
     return () => transport.off("session_updated", onSession);
   }, [transport]);
@@ -189,7 +199,37 @@ export function useSession(transport: GameTransport, resetKey: number = 0): Sess
   return state;
 }
 
-/** Captures the final podium from the game_ended event (null until the game ends). */
+export interface GameState {
+  gameId: string | null;
+  roundsTotal: number | null;
+  active: boolean;
+}
+
+/** Tracks the active game (from game_started / game_ended). */
+export function useGame(transport: GameTransport, resetKey: number = 0): GameState {
+  const [state, setState] = useState<GameState>({ gameId: null, roundsTotal: null, active: false });
+
+  useEffect(() => {
+    setState({ gameId: null, roundsTotal: null, active: false });
+  }, [resetKey]);
+
+  useEffect(() => {
+    const onStarted = ({ gameId, roundsTotal }: { gameId: string; roundsTotal: number }) => {
+      setState({ gameId, roundsTotal, active: true });
+    };
+    const onEnded = () => setState((s) => ({ ...s, active: false }));
+    transport.on("game_started", onStarted);
+    transport.on("game_ended", onEnded);
+    return () => {
+      transport.off("game_started", onStarted);
+      transport.off("game_ended", onEnded);
+    };
+  }, [transport]);
+
+  return state;
+}
+
+/** Captures the final podium from game_ended (null until a game ends; cleared on a new game). */
 export function useGameEnd(transport: GameTransport, resetKey: number = 0): PodiumEntry[] | null {
   const [podium, setPodium] = useState<PodiumEntry[] | null>(null);
 
@@ -199,24 +239,45 @@ export function useGameEnd(transport: GameTransport, resetKey: number = 0): Podi
 
   useEffect(() => {
     const onEnd = ({ podium }: { podium: PodiumEntry[] }) => setPodium(podium);
+    const onStarted = () => setPodium(null);
     transport.on("game_ended", onEnd);
-    return () => transport.off("game_ended", onEnd);
+    transport.on("game_started", onStarted);
+    return () => {
+      transport.off("game_ended", onEnd);
+      transport.off("game_started", onStarted);
+    };
   }, [transport]);
 
   return podium;
 }
 
-/** Tracks the scoreboard (playerId → total) from score_updated events. */
-export function useScores(transport: GameTransport, resetKey: number = 0): Map<string, number> {
-  const [scores, setScores] = useState<Map<string, number>>(new Map());
+export interface Scores {
+  /** Current game's scoreboard (playerId → points). */
+  game: Map<string, number>;
+  /** Session cumulative across all games (playerId → points). */
+  session: Map<string, number>;
+}
+
+/** Tracks the current game's scoreboard and the session cumulative. */
+export function useScores(transport: GameTransport, resetKey: number = 0): Scores {
+  const [scores, setScores] = useState<Scores>({ game: new Map(), session: new Map() });
 
   useEffect(() => {
-    setScores(new Map());
+    setScores({ game: new Map(), session: new Map() });
   }, [resetKey]);
 
   useEffect(() => {
-    const onScore = ({ scores }: { scores: ScoreEntry[] }) => {
-      setScores(new Map(scores.map((s) => [s.playerId, s.total])));
+    const onScore = ({
+      gameScores,
+      sessionTotals,
+    }: {
+      gameScores: ScoreEntry[];
+      sessionTotals: ScoreEntry[];
+    }) => {
+      setScores({
+        game: new Map(gameScores.map((s) => [s.playerId, s.total])),
+        session: new Map(sessionTotals.map((s) => [s.playerId, s.total])),
+      });
     };
     transport.on("score_updated", onScore);
     return () => transport.off("score_updated", onScore);

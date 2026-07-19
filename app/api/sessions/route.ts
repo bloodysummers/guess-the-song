@@ -1,24 +1,21 @@
 import { NextResponse } from "next/server";
 
-import type { SessionConfig } from "@/lib/game/types";
 import { generateCode } from "@/lib/transport/server/code";
 import { getSupabaseAdmin } from "@/lib/transport/server/supabase-admin";
 
 interface CreateBody {
   hostName?: string;
-  playlistId?: string;
-  config?: SessionConfig;
-  roundsTotal?: number;
 }
 
 const UNIQUE_VIOLATION = "23505";
 
-// POST /api/sessions — create a session and its host player.
+// POST /api/sessions — create a session hub with its host. No game config here;
+// games are configured/started later via POST /api/games.
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as CreateBody;
   const hostName = body.hostName?.trim();
 
-  if (!hostName || !body.playlistId || !body.config) {
+  if (!hostName) {
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   }
 
@@ -31,13 +28,7 @@ export async function POST(req: Request) {
     code = generateCode();
     const { data, error } = await admin
       .from("sessions")
-      .insert({
-        code,
-        playlist_id: body.playlistId,
-        status: "lobby",
-        config: body.config,
-        rounds_total: body.roundsTotal ?? 10,
-      })
+      .insert({ code, status: "open" })
       .select("id")
       .single();
 
@@ -54,7 +45,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "code_collision" }, { status: 500 });
   }
 
-  // Create the host player (non-scoring presenter/judge).
   const { data: host, error: hostErr } = await admin
     .from("players")
     .insert({ session_id: sessionId, display_name: hostName, is_host: true })

@@ -57,17 +57,28 @@ configured total.
 
 ### Requirement: The host can restart the game with the same players
 
-The host SHALL be able to start a new game with the same players. Scores reset to zero and
-prior rounds are cleared, returning the session to the `lobby`.
+After a game ends, the host SHALL be able to start a new game with the same players (see
+`game-lifecycle`). The new game is a fresh game in the same session — its own scoreboard
+starts at zero and it has its own configuration — while the players stay in the session
+without rejoining.
 
-#### Scenario: Play again resets scores and returns to lobby
+#### Scenario: New game keeps the players
 
-- **WHEN** the host chooses to play again
-- **THEN** every player's score resets to zero and the session returns to `lobby` with the
-  same players
+- **WHEN** the host starts a new game after the previous one ended
+- **THEN** the same players are in the new game (no rejoin), with a fresh scoreboard at zero
 
-#### Scenario: Prior rounds do not affect the new game
+#### Scenario: Prior game does not affect the new game
 
-- **WHEN** play again is chosen
-- **THEN** prior rounds, buzzes, and judgements no longer affect the new game
+- **WHEN** a new game starts
+- **THEN** the prior game's rounds, buzzes, and judgements do not affect the new game
+
+### Requirement: The advance control reflects the final round
+
+When the current round is the last configured round, the host's advance control SHALL
+indicate that advancing ends the game rather than starting another round.
+
+#### Scenario: Final round shows an end control
+
+- **WHEN** the current round number equals the configured total
+- **THEN** the host's advance control indicates finishing the game (not "next round")
 

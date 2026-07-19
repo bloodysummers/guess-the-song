@@ -6,6 +6,7 @@
 import type { ScoringMode } from "./types";
 
 const BASE = 100;
+const BASE_SIMPLE = 10;
 const SPEED_FLOOR = 0.1;
 
 const DIFFICULTY_MULTIPLIER: Record<number, number> = {
@@ -27,15 +28,24 @@ export interface AwardInput {
   timeToBuzzMs: number;
   /** Extra points granted (artist/album/year); 0 by default. */
   extras?: number;
+  /** Multiplicative modifier for penalties (< 1) or boosts (> 1); 1 by default. */
+  modifier?: number;
+}
+
+function speedFactor(audioWindowMs: number, timeToBuzzMs: number): number {
+  const raw = 1 - timeToBuzzMs / audioWindowMs;
+  return Math.min(1, Math.max(SPEED_FLOOR, raw));
 }
 
 /** Points awarded for a correct answer. */
 export function computeAward(input: AwardInput): number {
-  if (input.mode === "simple") {
-    return 1;
-  }
-  const raw = 1 - input.timeToBuzzMs / input.audioWindowMs;
-  const speedFactor = Math.min(1, Math.max(SPEED_FLOOR, raw));
+  const modifier = input.modifier ?? 1;
   const extras = input.extras ?? 0;
-  return Math.round(BASE * difficultyMultiplier(input.audioWindowMs) * speedFactor) + extras;
+  const base =
+    input.mode === "simple"
+      ? BASE_SIMPLE
+      : BASE *
+        difficultyMultiplier(input.audioWindowMs) *
+        speedFactor(input.audioWindowMs, input.timeToBuzzMs);
+  return Math.round(base * modifier) + extras;
 }

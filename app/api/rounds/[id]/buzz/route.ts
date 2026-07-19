@@ -34,7 +34,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
   const { data: round } = await admin
     .from("rounds")
-    .select("id, session_id, phase")
+    .select("id, session_id, game_id, phase")
     .eq("id", roundId)
     .maybeSingle();
 
@@ -49,7 +49,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   // second buzz from the same player.
   const { error } = await admin
     .from("buzzes")
-    .insert({ round_id: roundId, player_id: playerId, session_id: sessionId });
+    .insert({ round_id: roundId, player_id: playerId, session_id: sessionId, game_id: round.game_id });
 
   if (error) {
     if (error.code === UNIQUE_VIOLATION) {

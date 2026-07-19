@@ -14,7 +14,7 @@ interface JudgeBody {
   bonusFlags?: Record<string, boolean>;
 }
 
-// POST /api/rounds/:id/judge — the host judges the current answerer.
+// POST /api/rounds/:id/judge — the host judges the current answerer (game-scoped).
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id: roundId } = await ctx.params;
   const body = (await req.json().catch(() => ({}))) as JudgeBody;
@@ -32,7 +32,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
   const { data: round } = await admin
     .from("rounds")
-    .select("id, session_id, phase, current_answerer_id, track_id, audio_window_ms, started_at")
+    .select(
+      "id, session_id, game_id, phase, current_answerer_id, track_id, audio_window_ms, started_at, replay_count",
+    )
     .eq("id", roundId)
     .maybeSingle();
 
@@ -45,6 +47,16 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   if (round.current_answerer_id !== targetPlayerId) {
     return NextResponse.json({ error: "not_current_answerer" }, { status: 409 });
   }
+
+  const gameId = round.game_id as string;
+  const { data: game } = await admin
+    .from("games")
+    .select("config")
+    .eq("id", gameId)
+    .maybeSingle();
+  const config = (game?.config ?? {}) as { scoringMode?: ScoringMode; allowSteal?: boolean };
+  const mode = config.scoringMode ?? "simple";
+  const allowSteal = config.allowSteal ?? true;
 
   const revealFromTrack = async () => {
     const { data: track } = await admin
@@ -60,13 +72,6 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   };
 
   if (verdict === "correct") {
-    const { data: session } = await admin
-      .from("sessions")
-      .select("config")
-      .eq("id", sessionId)
-      .maybeSingle();
-    const mode = (session?.config as { scoringMode?: ScoringMode })?.scoringMode ?? "simple";
-
     const { data: buzz } = await admin
       .from("buzzes")
       .select("server_ts")
@@ -79,31 +84,41 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         ? new Date(buzz.server_ts).getTime() - new Date(round.started_at).getTime()
         : 0;
 
+    // A replayed round applies a penalty modifier to the award.
+    const REPLAY_PENALTY = 0.5;
+    const modifier = (round.replay_count as number) >= 1 ? REPLAY_PENALTY : 1;
+
     const points = computeAward({
       mode,
       audioWindowMs: round.audio_window_ms,
       timeToBuzzMs,
       extras: 0,
+      modifier,
     });
 
     await admin.from("judgements").insert({
       round_id: roundId,
       session_id: sessionId,
+      game_id: gameId,
       player_id: targetPlayerId,
       verdict: "correct",
       awarded_points: points,
       bonus_flags: body.bonusFlags ?? {},
     });
 
-    const { data: player } = await admin
-      .from("players")
+    // Add points to this game's scoreboard (row was seeded at game creation).
+    const { data: gs } = await admin
+      .from("game_scores")
       .select("score")
-      .eq("id", targetPlayerId)
+      .eq("game_id", gameId)
+      .eq("player_id", targetPlayerId)
       .maybeSingle();
     await admin
-      .from("players")
-      .update({ score: (player?.score ?? 0) + points })
-      .eq("id", targetPlayerId);
+      .from("game_scores")
+      .upsert(
+        { game_id: gameId, player_id: targetPlayerId, score: (gs?.score ?? 0) + points },
+        { onConflict: "game_id,player_id" },
+      );
 
     await admin
       .from("rounds")
@@ -123,17 +138,11 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   await admin.from("judgements").insert({
     round_id: roundId,
     session_id: sessionId,
+    game_id: gameId,
     player_id: targetPlayerId,
     verdict: "incorrect",
     awarded_points: 0,
   });
-
-  const { data: session } = await admin
-    .from("sessions")
-    .select("config")
-    .eq("id", sessionId)
-    .maybeSingle();
-  const allowSteal = (session?.config as { allowSteal?: boolean })?.allowSteal ?? true;
 
   const { data: judged } = await admin
     .from("judgements")

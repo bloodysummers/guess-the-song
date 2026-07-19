@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { clearIdentity, loadIdentity, saveIdentity } from "@/lib/game/identity";
 import { errorMessage } from "@/lib/game/errors";
 import {
+  useGame,
   useGameEnd,
   useRoster,
   useRoundState,
@@ -21,8 +22,8 @@ export default function PlayPage() {
   const round = useRoundState(transport, sessionGen);
   const scores = useScores(transport, sessionGen);
   const session = useSession(transport, sessionGen);
+  const game = useGame(transport, sessionGen);
   const podium = useGameEnd(transport, sessionGen);
-  const prevStatus = useRef<string | null>(null);
 
   const [phase, setPhase] = useState<"loading" | "join" | "lobby">("loading");
   const [code, setCode] = useState("");
@@ -64,28 +65,9 @@ export default function PlayPage() {
     };
   }, [transport]);
 
-  // Reset the buzz state whenever a new round starts.
   useEffect(() => {
     setHasBuzzed(false);
   }, [round.roundId]);
-
-  // When the host restarts the game (status returns to lobby), refresh the view.
-  useEffect(() => {
-    if (prevStatus.current && prevStatus.current !== "lobby" && session.status === "lobby") {
-      const id = loadIdentity();
-      if (id) {
-        transport
-          .resume({
-            sessionId: id.sessionId,
-            playerId: id.playerId,
-            reconnectToken: id.reconnectToken,
-          })
-          .then(() => setSessionGen((g) => g + 1))
-          .catch(() => {});
-      }
-    }
-    prevStatus.current = session.status;
-  }, [session.status, transport]);
 
   async function handleJoin(e: React.FormEvent) {
     e.preventDefault();
@@ -118,7 +100,6 @@ export default function PlayPage() {
     try {
       await transport.buzz({ roundId: round.roundId });
     } catch (err) {
-      // "already_buzzed" is fine — keep the buzzed state; otherwise re-enable.
       if (!(err instanceof TransportError) || err.code !== "already_buzzed") {
         setHasBuzzed(false);
         setError(errorMessage(err));
@@ -136,8 +117,8 @@ export default function PlayPage() {
     setPhase("join");
   }
 
-  const nameOf = (id: string | null) =>
-    id ? roster.find((p) => p.id === id)?.displayName ?? "—" : "—";
+  const nameOf = (id: string | null) => (id ? roster.find((p) => p.id === id)?.displayName ?? "—" : "—");
+  const players = roster.filter((p) => !p.isHost);
 
   if (phase === "loading") {
     return (
@@ -148,21 +129,28 @@ export default function PlayPage() {
   }
 
   if (phase === "lobby") {
-    const myRank = round.buzzQueue.find((b) => b.playerId === myPlayerId)?.rank ?? null;
-    const gameOver = podium !== null;
-    const iWon = gameOver && podium[0]?.playerId === myPlayerId;
+    const leaveBtn = (
+      <button type="button" onClick={handleLeave} className="secondary">
+        Salir
+      </button>
+    );
 
-    return (
-      <main>
-        <h1>{gameOver ? "🏁 Fin de la partida" : `Hola, ${myName}`}</h1>
+    if (session.status === "closed") {
+      return (
+        <main>
+          <h1>Sesión terminada</h1>
+          <p className="muted">El anfitrión cerró la sesión.</p>
+          {leaveBtn}
+        </main>
+      );
+    }
 
-        {!gameOver && round.roundId && (
-          <p className="muted">
-            Ronda {round.roundNumber} de {session.roundsTotal ?? "?"}
-          </p>
-        )}
-
-        {gameOver ? (
+    // A game just ended — show the podium.
+    if (podium) {
+      const iWon = podium[0]?.playerId === myPlayerId;
+      return (
+        <main>
+          <h1>🏁 Fin del juego</h1>
           <div className="panel podium">
             {iWon && (
               <p>
@@ -176,61 +164,98 @@ export default function PlayPage() {
                 </li>
               ))}
             </ol>
-            <p className="muted">Espera a que el anfitrión juegue de nuevo…</p>
           </div>
-        ) : !round.roundId ? (
-          <p className="muted">Espera a que el presentador inicie la ronda…</p>
-        ) : round.resolution ? (
-          <div className="panel result">
-            {round.resolution === "correct" ? (
-              <p>
-                🎉 Acertó <strong>{nameOf(round.winnerPlayerId)}</strong>
-                {round.winnerPlayerId === myPlayerId ? " (¡tú!)" : ""}
-              </p>
-            ) : (
-              <p>Nadie acertó.</p>
-            )}
-            {round.revealedAnswer && (
-              <p className="muted">
-                Era: {round.revealedAnswer.title} — {round.revealedAnswer.artist}
-              </p>
-            )}
-          </div>
-        ) : (
-          <div className="panel">
-            {round.currentAnswererId === myPlayerId ? (
-              <p>
-                🎤 <strong>¡Tu turno de responder!</strong> Dilo en voz alta.
-              </p>
-            ) : round.currentAnswererId ? (
-              <p>
-                🎤 Responde: <strong>{nameOf(round.currentAnswererId)}</strong>
-              </p>
-            ) : (
-              <p className="muted">🎵 ¡Escucha! Pulsa BUZZ cuando la sepas.</p>
-            )}
-
-            {!hasBuzzed ? (
-              <button type="button" className="buzz" onClick={handleBuzz}>
-                BUZZ
-              </button>
-            ) : (
-              <p>Buzzeaste{myRank ? ` — posición #${myRank}` : ""}. ✋</p>
-            )}
-          </div>
-        )}
-
-        {!gameOver && (
           <p className="muted">
-            Tu puntaje: <strong>{scores.get(myPlayerId) ?? 0}</strong>
+            Tu acumulado en la sesión: <strong>{scores.session.get(myPlayerId) ?? 0}</strong>
           </p>
-        )}
+          <p className="muted">Espera a que el anfitrión inicie otro juego…</p>
+          {leaveBtn}
+        </main>
+      );
+    }
 
-        {error && <p className="error">{error}</p>}
+    // A game is in progress.
+    if (game.active && round.roundId) {
+      const myRank = round.buzzQueue.find((b) => b.playerId === myPlayerId)?.rank ?? null;
+      return (
+        <main>
+          <h1>Hola, {myName}</h1>
+          <p className="muted">
+            Ronda {round.roundNumber} de {game.roundsTotal ?? "?"}
+          </p>
 
-        <button type="button" onClick={handleLeave} className="secondary">
-          Salir
-        </button>
+          {round.resolution ? (
+            <div className="panel result">
+              {round.resolution === "correct" ? (
+                <p>
+                  🎉 Acertó <strong>{nameOf(round.winnerPlayerId)}</strong>
+                  {round.winnerPlayerId === myPlayerId ? " (¡tú!)" : ""}
+                </p>
+              ) : (
+                <p>Nadie acertó.</p>
+              )}
+              {round.revealedAnswer && (
+                <p className="muted">
+                  Era: {round.revealedAnswer.title} — {round.revealedAnswer.artist}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="panel">
+              {round.currentAnswererId === myPlayerId ? (
+                <p>
+                  🎤 <strong>¡Tu turno de responder!</strong> Dilo en voz alta.
+                </p>
+              ) : round.currentAnswererId ? (
+                <p>
+                  🎤 Responde: <strong>{nameOf(round.currentAnswererId)}</strong>
+                </p>
+              ) : (
+                <p className="muted">🎵 ¡Escucha! Pulsa BUZZ cuando la sepas.</p>
+              )}
+
+              {round.replayCount > 0 && <p className="muted">🔁 Canción repetida — penalización</p>}
+
+              {!hasBuzzed ? (
+                <button type="button" className="buzz" onClick={handleBuzz}>
+                  BUZZ
+                </button>
+              ) : (
+                <p>Buzzeaste{myRank ? ` — posición #${myRank}` : ""}. ✋</p>
+              )}
+            </div>
+          )}
+
+          <p className="muted">
+            Tu puntaje: <strong>{scores.game.get(myPlayerId) ?? 0}</strong>
+          </p>
+          {error && <p className="error">{error}</p>}
+          {leaveBtn}
+        </main>
+      );
+    }
+
+    // Session hub — waiting for the host to start a game.
+    return (
+      <main>
+        <h1>Hola, {myName}</h1>
+        <p className="muted">Espera a que el anfitrión inicie un juego…</p>
+
+        <h2>Jugadores ({players.length})</h2>
+        <ul className="roster">
+          {players.map((p) => (
+            <li key={p.id}>
+              <span className={p.online ? "dot online" : "dot"} /> {p.displayName}
+              {scores.session.get(p.id) ? (
+                <>
+                  {" — "}
+                  <strong>{scores.session.get(p.id)}</strong>
+                </>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+        {leaveBtn}
       </main>
     );
   }
@@ -250,7 +275,6 @@ export default function PlayPage() {
             placeholder="ABCDE"
           />
         </label>
-
         <label>
           Tu nombre
           <input
@@ -261,9 +285,7 @@ export default function PlayPage() {
             placeholder="¿Cómo te llamas?"
           />
         </label>
-
         {error && <p className="error">{error}</p>}
-
         <button type="submit" disabled={submitting || !code || !displayName}>
           {submitting ? "Entrando…" : "Entrar"}
         </button>

@@ -5,8 +5,9 @@
  * server Route Handlers (service role); reads and presence use the browser anon
  * client over Realtime.
  *
- * Lobby actions (create/join/resume/leave/presence) are implemented. Gameplay
- * actions (startRound/buzz/judge/...) remain stubs until their phases.
+ * Session = persistent hub (players/host). Game = a playthrough inside a session.
+ * Round/buzz/judgement Realtime is filtered by session_id (stable key) and scoped
+ * to the current game_id / round_id on the client.
  */
 
 import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
@@ -24,6 +25,8 @@ import {
   TransportError,
   type Ack,
   type BuzzInput,
+  type CreateGameInput,
+  type CreateGameResult,
   type CreateSessionInput,
   type CreateSessionResult,
   type GameEventHandler,
@@ -33,6 +36,7 @@ import {
   type JoinSessionInput,
   type JoinSessionResult,
   type JudgeInput,
+  type ReplayInput,
   type ResumeInput,
   type ResumeResult,
   type StartRoundResult,
@@ -45,14 +49,17 @@ interface PlayerRow {
   is_host: boolean;
 }
 
-interface SessionRow {
-  status: SessionStatus;
+interface GameRow {
+  id: string;
   config: SessionConfig;
   rounds_total: number;
+  status: string;
+  current_round_id: string | null;
 }
 
 interface RoundRow {
   id: string;
+  game_id: string;
   round_number: number;
   audio_window_ms: number;
   phase: string;
@@ -73,6 +80,7 @@ interface RoundUpdateRow {
   revealed_title: string | null;
   revealed_artist: string | null;
   revealed_year: number | null;
+  replay_count: number;
 }
 
 interface JudgementRow {
@@ -107,10 +115,6 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   return data as T;
 }
 
-function notImplemented(method: string): never {
-  throw new Error(`SupabaseTransport.${method}() is not implemented yet (see roadmap phases).`);
-}
-
 export class SupabaseTransport implements GameTransport {
   private readonly browser: SupabaseClient;
   private readonly handlers = new Map<GameEventName, Set<GameEventHandler<GameEventName>>>();
@@ -121,22 +125,21 @@ export class SupabaseTransport implements GameTransport {
   private isHost = false;
   private channel: RealtimeChannel | null = null;
 
+  private currentGameId: string | null = null;
   private currentRoundId: string | null = null;
   private currentAnswererId: string | null = null;
+  private currentReplayCount = 0;
   private buzzQueue: { playerId: string; serverTs: string }[] = [];
 
   constructor(client?: SupabaseClient) {
     this.browser = client ?? getSupabaseBrowser();
   }
 
-  // --- Lobby actions ------------------------------------------------------
+  // --- Session actions ----------------------------------------------------
 
   async createSession(input: CreateSessionInput): Promise<CreateSessionResult> {
     const result = await postJson<CreateSessionResult>("/api/sessions", {
       hostName: input.hostName,
-      playlistId: input.playlistId,
-      config: input.config,
-      roundsTotal: input.roundsTotal,
     });
     this.setContext(result.sessionId, result.hostPlayerId, true, result.reconnectToken);
     await this.subscribe();
@@ -172,24 +175,70 @@ export class SupabaseTransport implements GameTransport {
     return { ok: true };
   }
 
+  async closeSession(): Promise<Ack> {
+    await postJson("/api/sessions/close", {
+      sessionId: this.sessionId,
+      playerId: this.playerId,
+      reconnectToken: this.reconnectToken,
+    });
+    return { ok: true };
+  }
+
   async presence(): Promise<string[]> {
     if (!this.channel) return [];
     return Object.keys(this.channel.presenceState());
   }
 
-  // --- Round & buzzer actions ---------------------------------------------
+  // --- Game actions -------------------------------------------------------
 
-  async startRound(): Promise<StartRoundResult> {
-    const res = await postJson<StartRoundHostResult & { gameOver?: boolean }>("/api/rounds", {
+  async createGame(input: CreateGameInput): Promise<CreateGameResult> {
+    const result = await postJson<CreateGameResult>("/api/games", {
       sessionId: this.sessionId,
       playerId: this.playerId,
       reconnectToken: this.reconnectToken,
+      playlistId: input.playlistId,
+      config: input.config,
+      roundsTotal: input.roundsTotal,
     });
+    // Apply eagerly so the host transitions immediately (the Realtime games INSERT
+    // will re-dispatch game_started for everyone; it is idempotent).
+    this.currentGameId = result.gameId;
+    this.resetRoundState();
+    this.dispatch("game_started", {
+      gameId: result.gameId,
+      roundsTotal: input.roundsTotal ?? 10,
+      config: input.config,
+    });
+    return result;
+  }
+
+  async endGame(): Promise<Ack> {
+    if (this.currentGameId) {
+      await postJson(`/api/games/${this.currentGameId}/end`, {
+        sessionId: this.sessionId,
+        playerId: this.playerId,
+        reconnectToken: this.reconnectToken,
+      }).catch(() => undefined);
+    }
+    return { ok: true };
+  }
+
+  // --- Round & buzzer actions ---------------------------------------------
+
+  async startRound(): Promise<StartRoundResult> {
+    if (!this.currentGameId) throw new TransportError("no_active_game", 409);
+    const res = await postJson<StartRoundHostResult & { gameOver?: boolean }>(
+      `/api/games/${this.currentGameId}/rounds`,
+      {
+        sessionId: this.sessionId,
+        playerId: this.playerId,
+        reconnectToken: this.reconnectToken,
+      },
+    );
     if (res.gameOver) {
-      // The game ended; the session UPDATE (finished) drives the podium.
+      // The game ended; the games UPDATE (finished) drives the podium.
       return { roundId: "" };
     }
-    // Host-only: the track + answer are delivered only in this response.
     this.dispatch("round_host_payload", {
       roundId: res.roundId,
       audioWindowMs: res.audioWindowMs,
@@ -199,8 +248,12 @@ export class SupabaseTransport implements GameTransport {
     return { roundId: res.roundId };
   }
 
-  async restart(): Promise<Ack> {
-    await postJson("/api/sessions/restart", {
+  nextRound(): Promise<StartRoundResult> {
+    return this.startRound();
+  }
+
+  async buzz(input: BuzzInput): Promise<Ack> {
+    await postJson(`/api/rounds/${input.roundId}/buzz`, {
       sessionId: this.sessionId,
       playerId: this.playerId,
       reconnectToken: this.reconnectToken,
@@ -208,13 +261,8 @@ export class SupabaseTransport implements GameTransport {
     return { ok: true };
   }
 
-  nextRound(): Promise<StartRoundResult> {
-    // The endpoint resolves the active round as skipped, then starts a new one.
-    return this.startRound();
-  }
-
-  async buzz(input: BuzzInput): Promise<Ack> {
-    await postJson(`/api/rounds/${input.roundId}/buzz`, {
+  async replayRound(input: ReplayInput): Promise<Ack> {
+    await postJson(`/api/rounds/${input.roundId}/replay`, {
       sessionId: this.sessionId,
       playerId: this.playerId,
       reconnectToken: this.reconnectToken,
@@ -234,12 +282,6 @@ export class SupabaseTransport implements GameTransport {
     return { ok: true };
   }
 
-  // --- Gameplay actions (stubs) -------------------------------------------
-
-  endGame(): Promise<Ack> {
-    return notImplemented("endGame");
-  }
-
   // --- Event subscription -------------------------------------------------
 
   on<E extends GameEventName>(event: E, handler: GameEventHandler<E>): void {
@@ -257,14 +299,15 @@ export class SupabaseTransport implements GameTransport {
       await this.browser.removeChannel(this.channel);
       this.channel = null;
     }
-    // NOTE: event handlers are intentionally kept. They are the UI's subscriptions
-    // and must survive leaving one session and joining another on the same transport.
+    // Event handlers are intentionally kept (they are the UI's subscriptions).
     this.sessionId = null;
     this.playerId = null;
     this.reconnectToken = null;
     this.isHost = false;
+    this.currentGameId = null;
     this.currentRoundId = null;
     this.currentAnswererId = null;
+    this.currentReplayCount = 0;
     this.buzzQueue = [];
   }
 
@@ -288,6 +331,13 @@ export class SupabaseTransport implements GameTransport {
     });
   }
 
+  private resetRoundState(): void {
+    this.currentRoundId = null;
+    this.currentAnswererId = null;
+    this.currentReplayCount = 0;
+    this.buzzQueue = [];
+  }
+
   private async subscribe(): Promise<void> {
     const sessionId = this.sessionId;
     const playerId = this.playerId;
@@ -305,9 +355,7 @@ export class SupabaseTransport implements GameTransport {
     channel.on(
       "postgres_changes",
       { event: "INSERT", schema: "public", table: "players", filter: `session_id=eq.${sessionId}` },
-      (payload) => {
-        this.dispatch("player_joined", { player: toPublic(payload.new as PlayerRow) });
-      },
+      (payload) => this.dispatch("player_joined", { player: toPublic(payload.new as PlayerRow) }),
     );
 
     channel.on(
@@ -323,14 +371,25 @@ export class SupabaseTransport implements GameTransport {
       "postgres_changes",
       { event: "UPDATE", schema: "public", table: "sessions", filter: `id=eq.${sessionId}` },
       (payload) => {
-        const s = payload.new as SessionRow;
-        this.dispatch("session_updated", {
-          status: s.status,
-          config: s.config,
-          roundsTotal: s.rounds_total,
-          currentRoundNumber: null,
-        });
-        if (s.status === "finished") void this.emitGameEnded();
+        const s = payload.new as { status: SessionStatus };
+        this.dispatch("session_updated", { status: s.status });
+      },
+    );
+
+    channel.on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "games", filter: `session_id=eq.${sessionId}` },
+      (payload) => this.handleGameStarted(payload.new as GameRow),
+    );
+
+    channel.on(
+      "postgres_changes",
+      { event: "UPDATE", schema: "public", table: "games", filter: `session_id=eq.${sessionId}` },
+      (payload) => {
+        const g = payload.new as GameRow;
+        if (g.id === this.currentGameId && g.status === "finished") {
+          void this.emitGameEnded(g.id);
+        }
       },
     );
 
@@ -339,9 +398,9 @@ export class SupabaseTransport implements GameTransport {
       { event: "INSERT", schema: "public", table: "rounds", filter: `session_id=eq.${sessionId}` },
       (payload) => {
         const r = payload.new as RoundRow;
+        if (r.game_id !== this.currentGameId) return;
+        this.resetRoundState();
         this.currentRoundId = r.id;
-        this.currentAnswererId = null;
-        this.buzzQueue = [];
         this.dispatch("round_started", {
           roundId: r.id,
           roundNumber: r.round_number,
@@ -365,12 +424,7 @@ export class SupabaseTransport implements GameTransport {
 
     channel.on(
       "postgres_changes",
-      {
-        event: "INSERT",
-        schema: "public",
-        table: "judgements",
-        filter: `session_id=eq.${sessionId}`,
-      },
+      { event: "INSERT", schema: "public", table: "judgements", filter: `session_id=eq.${sessionId}` },
       (payload) => this.handleJudgement(payload.new as JudgementRow),
     );
 
@@ -390,45 +444,71 @@ export class SupabaseTransport implements GameTransport {
     this.channel = channel;
 
     await this.emitInitialRoster();
-    await this.emitCurrentRound();
     await this.emitSession();
+    await this.emitCurrentGame();
+  }
+
+  private handleGameStarted(g: GameRow): void {
+    if (g.status !== "active") return;
+    this.currentGameId = g.id;
+    this.resetRoundState();
+    this.dispatch("game_started", {
+      gameId: g.id,
+      roundsTotal: g.rounds_total,
+      config: g.config,
+    });
+    void this.emitScoreUpdate();
   }
 
   private async emitSession(): Promise<void> {
     const { data } = await this.browser
       .from("sessions")
-      .select("status, config, rounds_total")
+      .select("status")
       .eq("id", this.sessionId)
       .maybeSingle();
-    const s = data as { status: SessionStatus; config: SessionConfig; rounds_total: number } | null;
-    if (!s) return;
-    this.dispatch("session_updated", {
-      status: s.status,
-      config: s.config,
-      roundsTotal: s.rounds_total,
-      currentRoundNumber: null,
-    });
-    if (s.status === "finished") await this.emitGameEnded();
+    const s = data as { status: SessionStatus } | null;
+    if (s) this.dispatch("session_updated", { status: s.status });
   }
 
-  private async emitGameEnded(): Promise<void> {
+  /** On (re)connect, replay the active game + round (if any) and the scores. */
+  private async emitCurrentGame(): Promise<void> {
     const { data } = await this.browser
+      .from("games")
+      .select("id, config, rounds_total, status, current_round_id")
+      .eq("session_id", this.sessionId)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    const game = (data as GameRow[] | null)?.[0];
+
+    if (!game || game.status !== "active") {
+      await this.emitScoreUpdate();
+      return;
+    }
+
+    this.handleGameStarted(game);
+    if (game.current_round_id) await this.emitCurrentRound(game.current_round_id);
+  }
+
+  private async emitGameEnded(gameId: string): Promise<void> {
+    const { data: gs } = await this.browser
+      .from("game_scores")
+      .select("player_id, score")
+      .eq("game_id", gameId);
+    const { data: players } = await this.browser
       .from("players")
-      .select("id, display_name, score, is_host")
+      .select("id, display_name")
       .eq("session_id", this.sessionId);
-    const ranked = (
-      (data as { id: string; display_name: string; score: number; is_host: boolean }[] | null) ??
-      []
-    )
-      .filter((p) => !p.is_host)
-      .sort((a, b) => b.score - a.score)
-      .map((p, i) => ({
-        playerId: p.id,
-        displayName: p.display_name,
-        total: p.score,
-        position: i + 1,
-      }));
-    this.dispatch("game_ended", { podium: ranked });
+    const names = new Map(
+      ((players as { id: string; display_name: string }[] | null) ?? []).map((p) => [
+        p.id,
+        p.display_name,
+      ]),
+    );
+    const podium = ((gs as { player_id: string; score: number }[] | null) ?? [])
+      .map((r) => ({ playerId: r.player_id, displayName: names.get(r.player_id) ?? "—", total: r.score }))
+      .sort((a, b) => b.total - a.total)
+      .map((p, i) => ({ ...p, position: i + 1 }));
+    this.dispatch("game_ended", { podium });
   }
 
   private async emitInitialRoster(): Promise<void> {
@@ -441,37 +521,30 @@ export class SupabaseTransport implements GameTransport {
     });
   }
 
-  /** On (re)connect, replay the active round and any buzzes already placed. */
-  private async emitCurrentRound(): Promise<void> {
-    const { data: session } = await this.browser
-      .from("sessions")
-      .select("current_round_id")
-      .eq("id", this.sessionId)
-      .maybeSingle();
-    const currentRoundId = (session as { current_round_id: string | null } | null)?.current_round_id;
-    if (!currentRoundId) return;
-
+  private async emitCurrentRound(roundId: string): Promise<void> {
     const { data: round } = await this.browser
       .from("rounds")
-      .select("id, round_number, audio_window_ms, phase, current_answerer_id")
-      .eq("id", currentRoundId)
+      .select("id, round_number, audio_window_ms, phase, current_answerer_id, replay_count")
+      .eq("id", roundId)
       .maybeSingle();
-    const r = round as (RoundRow & { current_answerer_id: string | null }) | null;
-
-    // Always refresh the scoreboard on (re)connect.
-    await this.emitScoreUpdate();
-
+    const r = round as
+      | (RoundRow & { current_answerer_id: string | null; replay_count: number })
+      | null;
     if (!r || r.phase === "resolved") return;
 
+    this.resetRoundState();
     this.currentRoundId = r.id;
     this.currentAnswererId = r.current_answerer_id;
-    this.buzzQueue = [];
+    this.currentReplayCount = r.replay_count;
     this.dispatch("round_started", {
       roundId: r.id,
       roundNumber: r.round_number,
       audioWindowMs: r.audio_window_ms,
       buzzEnabled: true,
     });
+    if (r.replay_count > 0) {
+      this.dispatch("round_replayed", { roundId: r.id, replayCount: r.replay_count });
+    }
 
     const { data: buzzes } = await this.browser
       .from("buzzes")
@@ -488,10 +561,7 @@ export class SupabaseTransport implements GameTransport {
     this.buzzQueue.push({ playerId: b.player_id, serverTs: b.server_ts });
     this.buzzQueue.sort((a, c) => (a.serverTs < c.serverTs ? -1 : a.serverTs > c.serverTs ? 1 : 0));
 
-    const queue: BuzzQueueEntry[] = this.buzzQueue.map((x, i) => ({
-      playerId: x.playerId,
-      rank: i + 1,
-    }));
+    const queue: BuzzQueueEntry[] = this.buzzQueue.map((x, i) => ({ playerId: x.playerId, rank: i + 1 }));
     const rank = queue.find((q) => q.playerId === b.player_id)?.rank ?? queue.length;
 
     this.dispatch("buzz_registered", { roundId: b.round_id, playerId: b.player_id, rank });
@@ -505,6 +575,11 @@ export class SupabaseTransport implements GameTransport {
   private handleRoundUpdate(r: RoundUpdateRow): void {
     if (r.id !== this.currentRoundId) return;
     this.currentAnswererId = r.current_answerer_id;
+
+    if (r.replay_count > this.currentReplayCount) {
+      this.currentReplayCount = r.replay_count;
+      this.dispatch("round_replayed", { roundId: r.id, replayCount: r.replay_count });
+    }
 
     if (r.phase === "resolved") {
       this.dispatch("round_ended", {
@@ -520,10 +595,7 @@ export class SupabaseTransport implements GameTransport {
       return;
     }
 
-    const queue: BuzzQueueEntry[] = this.buzzQueue.map((x, i) => ({
-      playerId: x.playerId,
-      rank: i + 1,
-    }));
+    const queue: BuzzQueueEntry[] = this.buzzQueue.map((x, i) => ({ playerId: x.playerId, rank: i + 1 }));
     this.dispatch("buzz_queue_updated", {
       roundId: r.id,
       queue,
@@ -543,13 +615,37 @@ export class SupabaseTransport implements GameTransport {
   }
 
   private async emitScoreUpdate(): Promise<void> {
-    const { data } = await this.browser
-      .from("players")
-      .select("id, score, is_host")
+    let gameScores: { playerId: string; total: number }[] = [];
+    if (this.currentGameId) {
+      const { data } = await this.browser
+        .from("game_scores")
+        .select("player_id, score")
+        .eq("game_id", this.currentGameId);
+      gameScores = ((data as { player_id: string; score: number }[] | null) ?? []).map((r) => ({
+        playerId: r.player_id,
+        total: r.score,
+      }));
+    }
+
+    // Session cumulative: sum of game_scores across all of the session's games.
+    const { data: games } = await this.browser
+      .from("games")
+      .select("id")
       .eq("session_id", this.sessionId);
-    const scores = ((data as { id: string; score: number; is_host: boolean }[] | null) ?? [])
-      .filter((p) => !p.is_host)
-      .map((p) => ({ playerId: p.id, total: p.score }));
-    this.dispatch("score_updated", { scores });
+    const gameIds = ((games as { id: string }[] | null) ?? []).map((g) => g.id);
+    let sessionTotals: { playerId: string; total: number }[] = [];
+    if (gameIds.length) {
+      const { data: all } = await this.browser
+        .from("game_scores")
+        .select("player_id, score")
+        .in("game_id", gameIds);
+      const m = new Map<string, number>();
+      ((all as { player_id: string; score: number }[] | null) ?? []).forEach((r) => {
+        m.set(r.player_id, (m.get(r.player_id) ?? 0) + r.score);
+      });
+      sessionTotals = [...m.entries()].map(([playerId, total]) => ({ playerId, total }));
+    }
+
+    this.dispatch("score_updated", { gameScores, sessionTotals });
   }
 }

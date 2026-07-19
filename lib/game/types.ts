@@ -3,7 +3,11 @@
  * Source of truth: docs/data-model.md
  */
 
-export type SessionStatus = "lobby" | "active" | "finished";
+/** Session hub status. */
+export type SessionStatus = "open" | "closed";
+
+/** A game (playthrough) status within a session. */
+export type GameStatus = "active" | "finished";
 
 export type RoundPhase = "playing" | "answering" | "resolved";
 

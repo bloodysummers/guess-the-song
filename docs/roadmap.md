@@ -117,33 +117,89 @@ correctamente y la respuesta se revela al cerrar la ronda.
 
 ---
 
-## MVP = Fases 1–5
+## MVP = Fases 1–5 — ✅ COMPLETO y desplegado (2026-07-18)
 
-Al cerrar la Fase 5 tenemos el juego jugable end-to-end: crear sala, unirse, jugar rondas
-con buzzer, juzgar, puntuar y ver podio, con playlists curadas sobre YouTube.
-
----
-
-## Post-MVP (backlog, sin orden fijo)
-
-| Feature | Change tentativo | Nota |
-|---|---|---|
-| Proveedor Spotify | `add-spotify-provider` | Segunda impl. de `MusicProvider` (Premium + OAuth) |
-| Modo opción múltiple | `add-multiple-choice-mode` | Auto-validado, sin juez; distractores desde la playlist |
-| Modo "verbal sin juez" | — | Variante auto-validada descartada del MVP, revivible |
-| Playlists propias del host | `add-host-playlists` | Importar y normalizar listas de YouTube/Spotify |
-| Bonus por datos extra (UI pulida) | `add-extra-points` | Flujo fino de artista/álbum/año |
-| PWA instalable | `add-pwa` | "Ícono en el home" sin dejar la web |
-| Perfiles / historial | `add-profiles-history` | Persistencia de jugadores y ranking histórico |
-| Penalización por buzz fallido (opt-in) | `add-wrong-buzz-penalty` | Config opcional, hoy en 0 |
-| Anti-abuso / rate limiting | `add-abuse-guards` | Protección del buzz y del join |
-| Despliegue remoto | `add-remote-deploy` | Enlazar proyecto Supabase remoto + `supabase db push` + seed remoto + deploy a Vercel. Hasta entonces, desarrollo 100% en Supabase local |
+Juego jugable end-to-end en producción (Vercel + Supabase remoto): crear sala → unirse por
+código/QR → sonar canción (YouTube) → buzzer sellado en servidor → juicio del host →
+puntuación (modos `simple`/`speed`) → podio → jugar de nuevo. Todas las fases con specs
+archivados en OpenSpec.
 
 ---
 
-## Dependencias (resumen)
+# Roadmap Post-MVP (por épicas)
+
+Reorganizado por valor y dependencias. Las "épicas" agrupan varios changes de OpenSpec.
+Regla: primero lo que da valor de juego sin dependencias externas; los providers (que
+necesitan cuentas/API keys y revisión de plataforma) como esfuerzo dedicado aparte.
+
+## Épica A — Modelo de puntuación v2 (fundación) · `add-scoring-v2`
+
+**Por qué primero:** habilita penalizaciones y boosts para replay y gamificación.
+
+- Cambiar el modo base de 1 punto fijo a **base configurable (default 10)** → permite medios
+  puntos, penalizaciones y bonificaciones sin fracciones raras.
+- Modelo de puntos con "modificadores" (penalización/boost) que otros features aplican.
+- Pequeño; sin dependencias externas. Desbloquea B y F.
+
+## Épica B — Replay / segunda oportunidad · `add-replay`
+
+- Botón **Replay** del host cuando se agota la ventana sin buzz (segunda reproducción).
+- Penalización por modo: `speed` → factor reducido / tope; `base` → medio punto.
+- Depende de Épica A.
+
+## Épica C — Modo opción múltiple · `add-multiple-choice-mode`
+
+- Modo auto-validado (sin juez): aparecen N opciones y gana quien acierte más rápido.
+- **Distractores desde los metadatos de la propia playlist** (ya tenemos `answer_title`/
+  `answer_artist` en cada `track`) → **no depende de los providers**.
+- Config: modo de juego (buzzer vs opción múltiple) al crear la sesión.
+
+## Épica D — Playlists propias y providers (esfuerzo grande, multi-change)
+
+Extiende `MusicProvider` con un lado de **catálogo** (listar playlists, leer pistas) +
+pipeline de **importación/normalización** a nuestro modelo `track`. Ver
+[`docs/providers.md`](./providers.md) para los prerequisitos externos y las restricciones
+reales de cada plataforma.
+
+- **D1 · `add-provider-catalog`** — interfaz de catálogo + importación/normalización.
+- **D2 · `add-youtube-public-playlists`** — el host pega una **URL de playlist pública** de
+  YouTube; se lee con API key (sin login del usuario). Reproducción gratis (IFrame). *Menor
+  fricción → primer paso recomendado.*
+- **D3 · `add-youtube-account`** — conectar cuenta (OAuth) para listas **privadas** de
+  YouTube Music. Requiere verificación de Google para producción.
+- **D4 · `add-spotify-provider`** — OAuth + Web Playback SDK. Metadatos limpios, pero la
+  reproducción completa exige **Spotify Premium** del host; revisión de app para escalar.
+
+> Las 3 opciones para el host quedan: (1) listas curadas del juego [YouTube, ya existe],
+> (2) YouTube propio, (3) Spotify propio.
+
+## Épica E — PWA instalable · `add-pwa`
+
+- Manifest + iconos (varios tamaños) + `apple-touch-icon` + `theme-color`.
+- **Service worker** (Serwist o next-pwa) para que sea instalable — es lo "adicional" además
+  del manifest/favicon. HTTPS ya lo da Vercel. Offline no es crítico (el juego necesita red).
+- Independiente; se puede hacer en cualquier momento.
+
+## Épica F — Gamificación estilo juego de mesa (exploratoria) · `add-game-mechanics`
+
+- Boosts, bonificaciones random en canciones específicas, y **cambios de mecánica elegidos
+  por el ganador de la ronda**.
+- Depende de Épica A (modelo de puntos con modificadores). Requiere una fase de diseño
+  propia; profundizar más adelante.
+
+## Pospuesto
+
+- **Perfiles / historial** — persistencia de jugadores y ranking histórico. Alcance poco
+  claro; se retoma después.
+- **Anti-abuso / rate limiting** — proteger buzz/join ante abuso a mayor escala.
+
+---
+
+## Secuencia recomendada
 
 ```
-Fase 1 ─► Fase 2 ─► Fase 3 ─► Fase 4 ─► Fase 5
-                                   └─► (backlog post-MVP)
+A (scoring v2) ─► B (replay) ─► C (opción múltiple)      [valor rápido, sin externos]
+E (PWA)                                                  [en paralelo, independiente]
+D1 ─► D2 (YouTube público) ─► D3/D4 (cuentas OAuth)      [providers, con setup externo]
+F (gamificación)                                         [tras A, exploratoria]
 ```

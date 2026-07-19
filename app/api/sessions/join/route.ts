@@ -31,7 +31,7 @@ export async function POST(req: Request) {
   if (!session) {
     return NextResponse.json({ error: "session_not_found" }, { status: 404 });
   }
-  if (session.status !== "lobby") {
+  if (session.status !== "open") {
     return NextResponse.json({ error: "session_not_joinable" }, { status: 409 });
   }
 

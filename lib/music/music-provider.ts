@@ -29,10 +29,15 @@ export interface MusicProvider {
   readonly kind: MusicProviderKind;
 
   /**
-   * Plays `track` starting at `startMs` for `durationMs`, then stops.
-   * Audio only — any video surface must stay hidden.
+   * Plays `track` for `durationMs`, then stops. Audio only — any video surface must
+   * stay hidden. The window is measured from when audio actually starts (not from the
+   * request), so buffering does not shorten it.
+   *
+   * `startMs`: a number plays exactly from that offset (used for replay); `null`
+   * randomizes the offset within the track. Returns the offset (ms) actually used, so
+   * the caller can replay the same fragment.
    */
-  play(track: PlayableTrackRef, startMs: number, durationMs: number): Promise<void>;
+  play(track: PlayableTrackRef, startMs: number | null, durationMs: number): Promise<number>;
 
   /** Stops playback immediately (e.g. when the first buzz lands). */
   stop(): Promise<void>;

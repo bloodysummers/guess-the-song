@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     .eq("id", sessionId)
     .maybeSingle();
 
-  if (!session || session.status === "finished") {
+  if (!session || session.status === "closed") {
     return NextResponse.json({ error: "session_over" }, { status: 409 });
   }
 

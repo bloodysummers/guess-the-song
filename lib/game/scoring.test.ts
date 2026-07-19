@@ -3,9 +3,27 @@ import { describe, expect, it } from "vitest";
 import { computeAward } from "./scoring";
 
 describe("computeAward", () => {
-  it("simple mode awards exactly 1 regardless of speed/difficulty", () => {
-    expect(computeAward({ mode: "simple", audioWindowMs: 5000, timeToBuzzMs: 100 })).toBe(1);
-    expect(computeAward({ mode: "simple", audioWindowMs: 1000, timeToBuzzMs: 4000 })).toBe(1);
+  it("simple mode awards the base (10) regardless of speed/difficulty", () => {
+    expect(computeAward({ mode: "simple", audioWindowMs: 5000, timeToBuzzMs: 100 })).toBe(10);
+    expect(computeAward({ mode: "simple", audioWindowMs: 1000, timeToBuzzMs: 4000 })).toBe(10);
+  });
+
+  it("modifier scales the award (penalty and boost)", () => {
+    expect(computeAward({ mode: "simple", audioWindowMs: 5000, timeToBuzzMs: 0, modifier: 0.5 })).toBe(
+      5,
+    );
+    expect(computeAward({ mode: "simple", audioWindowMs: 5000, timeToBuzzMs: 0, modifier: 2 })).toBe(
+      20,
+    );
+    // Default modifier leaves the award unchanged.
+    const base = computeAward({ mode: "speed", audioWindowMs: 5000, timeToBuzzMs: 0 });
+    const withDefault = computeAward({
+      mode: "speed",
+      audioWindowMs: 5000,
+      timeToBuzzMs: 0,
+      modifier: 1,
+    });
+    expect(withDefault).toBe(base);
   });
 
   it("speed: a faster buzz scores higher than a slower one", () => {
