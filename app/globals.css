@@ -63,6 +63,30 @@ h1 {
   color: var(--fg);
 }
 
+.hint {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+/*
+ * Host recovery actions (replay / re-roll fragment) stacked under the "playing"
+ * notice. Scoped to this wrapper on purpose: a blanket `.panel button.secondary`
+ * rule also caught the Incorrecto judging button and broke its row.
+ */
+.round-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.round-tools button.secondary {
+  width: 100%;
+  margin-top: 0;
+}
+
 button {
   padding: 0.7rem 1rem;
   font-size: 1rem;
@@ -155,6 +179,20 @@ button.secondary {
   border-radius: 12px;
   padding: 1rem 1.25rem;
   margin: 1rem 0;
+}
+
+/*
+ * Cover art of the playing track, in the host panel only. YouTube thumbnails are
+ * 16:9 with the square art letterboxed inside, so crop to a square to cut the bars.
+ */
+.cover {
+  display: block;
+  width: 132px;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 10px;
+  margin: 0 auto 0.9rem;
+  background: #0f0f16;
 }
 
 .controls {

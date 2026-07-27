@@ -33,7 +33,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const { data: round } = await admin
     .from("rounds")
     .select(
-      "id, session_id, game_id, phase, current_answerer_id, track_id, audio_window_ms, started_at, replay_count",
+      "id, session_id, game_id, phase, current_answerer_id, game_track_id, audio_window_ms, started_at, replay_count",
     )
     .eq("id", roundId)
     .maybeSingle();
@@ -58,16 +58,18 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const mode = config.scoringMode ?? "simple";
   const allowSteal = config.allowSteal ?? true;
 
+  // The reveal comes from the game's own snapshot, so it works for any source.
   const revealFromTrack = async () => {
     const { data: track } = await admin
-      .from("tracks")
-      .select("answer_title, answer_artist, year")
-      .eq("id", round.track_id)
+      .from("game_tracks")
+      .select("answer_title, answer_artist, year, artwork_url")
+      .eq("id", round.game_track_id)
       .maybeSingle();
     return {
       revealed_title: track?.answer_title ?? null,
       revealed_artist: track?.answer_artist ?? null,
       revealed_year: track?.year ?? null,
+      revealed_artwork_url: track?.artwork_url ?? null,
     };
   };
 

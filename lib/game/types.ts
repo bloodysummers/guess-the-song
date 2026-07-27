@@ -43,6 +43,15 @@ export interface SessionConfig {
 /** Extras the host grants when judging. */
 export type BonusFlags = Partial<ExtraPointsConfig>;
 
+/**
+ * Where a game's tracks come from. Resolved once, when the game is created: the
+ * game then plays from its own materialized snapshot, never from the source.
+ * Adding a provider (Spotify) means adding a variant here, nothing else.
+ */
+export type GameSource =
+  | { type: "curated"; playlistId: string }
+  | { type: "youtube"; url: string };
+
 export interface PlayerPublic {
   id: string;
   displayName: string;
@@ -85,9 +94,15 @@ export interface AnswerReference {
   album: string | null;
 }
 
-/** Answer revealed to everyone at round end (no track reference). */
+/**
+ * Answer revealed to everyone at round end (no track reference).
+ *
+ * `artworkUrl` is a plain image URL, not a provider reference: players get
+ * something to render, never something to look the song up with.
+ */
 export interface RevealedAnswer {
   title: string;
   artist: string;
   year: number | null;
+  artworkUrl: string | null;
 }

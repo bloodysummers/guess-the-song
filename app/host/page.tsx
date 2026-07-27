@@ -13,11 +13,14 @@ import {
   useScores,
   useTransport,
 } from "@/lib/game/lobby-hooks";
-import type { AnswerReference, ScoringMode, Verdict } from "@/lib/game/types";
+import type { AnswerReference, GameSource, ScoringMode, Verdict } from "@/lib/game/types";
 import { createMusicProvider } from "@/lib/music";
 import type { MusicProvider, PlayableTrackRef } from "@/lib/music";
 import { fetchPlaylists, type PlaylistSummary } from "@/lib/transport/queries";
 import type { GameEventHandler } from "@/lib/transport";
+
+/** Give up swapping after this many unplayable tracks in a row. */
+const MAX_TRACK_SWAPS = 3;
 
 const DIFFICULTIES = [
   { label: "Fácil — 15 s", ms: 15000 },
@@ -45,9 +48,13 @@ export default function HostPage() {
   const [submitting, setSubmitting] = useState(false);
   const [judging, setJudging] = useState(false);
   const [answer, setAnswer] = useState<AnswerReference | null>(null);
+  /** Cover art of the playing track. HOST-ONLY: it gives the answer away. */
+  const [artwork, setArtwork] = useState<string | null>(null);
 
   const [hostName, setHostName] = useState("");
+  const [sourceType, setSourceType] = useState<GameSource["type"]>("curated");
   const [playlistId, setPlaylistId] = useState("");
+  const [youtubeUrl, setYoutubeUrl] = useState("");
   const [scoringMode, setScoringMode] = useState<ScoringMode>("simple");
   const [audioWindowMs, setAudioWindowMs] = useState(10000);
   const [roundsTotal, setRoundsTotal] = useState(10);
@@ -55,6 +62,10 @@ export default function HostPage() {
   const providerRef = useRef<MusicProvider | null>(null);
   const lastTrackRef = useRef<(PlayableTrackRef & { startMs: number }) | null>(null);
   const lastWindowRef = useRef<number>(10000);
+  /** Round the current payload belongs to, so an error can name the round to fix. */
+  const roundIdRef = useRef<string | null>(null);
+  /** Guards against a broken playlist swapping tracks forever. */
+  const swapsRef = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -95,15 +106,42 @@ export default function HostPage() {
   useEffect(() => {
     const onHost: GameEventHandler<"round_host_payload"> = (payload) => {
       setAnswer(payload.answer);
+      roundIdRef.current = payload.roundId;
       lastWindowRef.current = payload.audioWindowMs;
       if (!providerRef.current) providerRef.current = createMusicProvider();
       const trackRef = { provider: payload.track.provider, providerRef: payload.track.providerRef };
+      setArtwork(providerRef.current.artworkUrl(trackRef));
       void providerRef.current.play(trackRef, null, payload.audioWindowMs).then((startMs) => {
         lastTrackRef.current = { ...trackRef, startMs };
       });
     };
     transport.on("round_host_payload", onHost);
     return () => transport.off("round_host_payload", onHost);
+  }, [transport]);
+
+  /**
+   * A track that cannot play at all (region block, embedding disabled, dead video)
+   * silently stranded the round before. Now it swaps itself out for another track,
+   * without consuming a round — the players never find out.
+   */
+  useEffect(() => {
+    if (!providerRef.current) providerRef.current = createMusicProvider();
+    providerRef.current.onPlaybackError(({ reason }) => {
+      const roundId = roundIdRef.current;
+      if (!roundId) return;
+      if (swapsRef.current >= MAX_TRACK_SWAPS) {
+        setRoundError(
+          "Varias canciones seguidas no se pudieron reproducir. Revisa la playlist o pasa a la siguiente ronda.",
+        );
+        return;
+      }
+      swapsRef.current += 1;
+      setRoundError(`Esa canción no se pudo reproducir (${reason}). Cambiando por otra…`);
+      void transport
+        .replaceRoundTrack({ roundId, reason })
+        .then(() => setRoundError(null))
+        .catch((err) => setRoundError(errorMessage(err)));
+    });
   }, [transport]);
 
   useEffect(() => {
@@ -139,7 +177,10 @@ export default function HostPage() {
     setSubmitting(true);
     try {
       await transport.createGame({
-        playlistId,
+        source:
+          sourceType === "youtube"
+            ? { type: "youtube", url: youtubeUrl.trim() }
+            : { type: "curated", playlistId },
         roundsTotal,
         config: {
           scoringMode,
@@ -160,6 +201,8 @@ export default function HostPage() {
   async function handleStartRound() {
     setRoundError(null);
     setAnswer(null);
+    setArtwork(null);
+    swapsRef.current = 0;
     try {
       await transport.startRound();
     } catch (err) {
@@ -177,6 +220,28 @@ export default function HostPage() {
         lastWindowRef.current,
       );
       await transport.replayRound({ roundId: round.roundId });
+    } catch (err) {
+      setRoundError(errorMessage(err));
+    }
+  }
+
+  /**
+   * Not a game mechanic — the host's escape hatch when the fragment that came up is
+   * unguessable (silence, pure ambience). Plays a DIFFERENT random fragment of the
+   * same track and charges nothing. Because it overwrites `lastTrackRef`, the
+   * penalized replay afterwards repeats this new fragment, not the discarded one.
+   */
+  async function handleRefragment() {
+    if (!round.roundId || !lastTrackRef.current) return;
+    setRoundError(null);
+    try {
+      await transport.refragmentRound({ roundId: round.roundId });
+      const trackRef = {
+        provider: lastTrackRef.current.provider,
+        providerRef: lastTrackRef.current.providerRef,
+      };
+      const startMs = await providerRef.current!.play(trackRef, null, lastWindowRef.current);
+      lastTrackRef.current = { ...trackRef, startMs };
     } catch (err) {
       setRoundError(errorMessage(err));
     }
@@ -207,6 +272,8 @@ export default function HostPage() {
     setSessionGen((g) => g + 1);
     setPhase("create");
   }
+
+  const sourceReady = sourceType === "youtube" ? youtubeUrl.trim().length > 0 : Boolean(playlistId);
 
   const nameOf = (id: string | null) => (id ? roster.find((p) => p.id === id)?.displayName ?? "—" : "—");
   const players = roster.filter((p) => !p.isHost);
@@ -245,16 +312,41 @@ export default function HostPage() {
         <h1>Nuevo juego</h1>
         <form onSubmit={handleCreateGame} className="form">
           <label>
-            Playlist
-            <select value={playlistId} onChange={(e) => setPlaylistId(e.target.value)} required>
-              {playlists.length === 0 && <option value="">(sin playlists)</option>}
-              {playlists.map((pl) => (
-                <option key={pl.id} value={pl.id}>
-                  {pl.name}
-                </option>
-              ))}
+            Canciones
+            <select
+              value={sourceType}
+              onChange={(e) => setSourceType(e.target.value as GameSource["type"])}
+            >
+              <option value="curated">Playlist del juego</option>
+              <option value="youtube">Mi playlist de YouTube / YouTube Music</option>
             </select>
           </label>
+          {sourceType === "curated" ? (
+            <label>
+              Playlist
+              <select value={playlistId} onChange={(e) => setPlaylistId(e.target.value)} required>
+                {playlists.length === 0 && <option value="">(sin playlists)</option>}
+                {playlists.map((pl) => (
+                  <option key={pl.id} value={pl.id}>
+                    {pl.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <label>
+              URL de la playlist (debe ser pública)
+              <input
+                type="url"
+                inputMode="url"
+                value={youtubeUrl}
+                onChange={(e) => setYoutubeUrl(e.target.value)}
+                placeholder="https://music.youtube.com/playlist?list=…"
+                required
+              />
+              <span className="hint">Se leen hasta 100 canciones. Las no disponibles se omiten.</span>
+            </label>
+          )}
           <label>
             Modo de puntuación
             <select value={scoringMode} onChange={(e) => setScoringMode(e.target.value as ScoringMode)}>
@@ -283,8 +375,12 @@ export default function HostPage() {
             />
           </label>
           {roundError && <p className="error">{roundError}</p>}
-          <button type="submit" disabled={submitting || !playlistId}>
-            {submitting ? "Creando…" : "Empezar juego"}
+          <button type="submit" disabled={submitting || !sourceReady}>
+            {submitting
+              ? sourceType === "youtube"
+                ? "Importando canciones…"
+                : "Creando…"
+              : "Empezar juego"}
           </button>
           <button type="button" className="secondary" onClick={() => setConfiguring(false)}>
             Cancelar
@@ -341,6 +437,18 @@ export default function HostPage() {
       <main>
         <h1>Ronda {round.roundId ? `${round.roundNumber} de ${game.roundsTotal ?? "?"}` : "—"}</h1>
         <div className="panel">
+          {artwork && (
+            // eslint-disable-next-line @next/next/no-img-element -- remote host, no loader configured
+            <img
+              className="cover"
+              src={artwork}
+              alt=""
+              onError={(e) => {
+                // A missing thumbnail must never break the round panel.
+                e.currentTarget.style.display = "none";
+              }}
+            />
+          )}
           {!round.roundId ? (
             <p className="muted">Pulsa &quot;Iniciar ronda&quot; para empezar.</p>
           ) : round.resolution ? (
@@ -380,9 +488,17 @@ export default function HostPage() {
           ) : (
             <>
               <p className="muted">🎵 Sonando… esperando el primer buzz.</p>
-              <button type="button" className="secondary" onClick={handleReplay}>
-                🔁 Repetir (penalización)
-              </button>
+              <div className="round-tools">
+                <button type="button" className="secondary" onClick={handleReplay}>
+                  🔁 Repetir (penalización)
+                </button>
+                <button type="button" className="secondary" onClick={handleRefragment}>
+                  🎲 Otro fragmento (sin penalización)
+                </button>
+                <span className="hint">
+                  Usa &quot;otro fragmento&quot; si el trozo que salió es silencio o no da pistas.
+                </span>
+              </div>
             </>
           )}
 

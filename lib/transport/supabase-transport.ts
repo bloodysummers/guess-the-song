@@ -36,6 +36,8 @@ import {
   type JoinSessionInput,
   type JoinSessionResult,
   type JudgeInput,
+  type RefragmentInput,
+  type ReplaceTrackInput,
   type ReplayInput,
   type ResumeInput,
   type ResumeResult,
@@ -80,6 +82,7 @@ interface RoundUpdateRow {
   revealed_title: string | null;
   revealed_artist: string | null;
   revealed_year: number | null;
+  revealed_artwork_url: string | null;
   replay_count: number;
 }
 
@@ -196,7 +199,7 @@ export class SupabaseTransport implements GameTransport {
       sessionId: this.sessionId,
       playerId: this.playerId,
       reconnectToken: this.reconnectToken,
-      playlistId: input.playlistId,
+      source: input.source,
       config: input.config,
       roundsTotal: input.roundsTotal,
     });
@@ -263,6 +266,35 @@ export class SupabaseTransport implements GameTransport {
 
   async replayRound(input: ReplayInput): Promise<Ack> {
     await postJson(`/api/rounds/${input.roundId}/replay`, {
+      sessionId: this.sessionId,
+      playerId: this.playerId,
+      reconnectToken: this.reconnectToken,
+    });
+    return { ok: true };
+  }
+
+  async replaceRoundTrack(input: ReplaceTrackInput): Promise<Ack> {
+    const res = await postJson<StartRoundHostResult>(
+      `/api/rounds/${input.roundId}/replace-track`,
+      {
+        sessionId: this.sessionId,
+        playerId: this.playerId,
+        reconnectToken: this.reconnectToken,
+        reason: input.reason,
+      },
+    );
+    // Same event as a fresh round: the host device just plays whatever it is handed.
+    this.dispatch("round_host_payload", {
+      roundId: input.roundId,
+      audioWindowMs: res.audioWindowMs,
+      track: res.track,
+      answer: res.answer,
+    });
+    return { ok: true };
+  }
+
+  async refragmentRound(input: RefragmentInput): Promise<Ack> {
+    await postJson(`/api/rounds/${input.roundId}/refragment`, {
       sessionId: this.sessionId,
       playerId: this.playerId,
       reconnectToken: this.reconnectToken,
@@ -590,6 +622,7 @@ export class SupabaseTransport implements GameTransport {
           title: r.revealed_title ?? "",
           artist: r.revealed_artist ?? "",
           year: r.revealed_year,
+          artworkUrl: r.revealed_artwork_url,
         },
       });
       return;

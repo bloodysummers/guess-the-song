@@ -194,6 +194,18 @@ export default function PlayPage() {
               ) : (
                 <p>Nadie acertó.</p>
               )}
+              {/* Only ever rendered once the round is resolved — see RevealedAnswer. */}
+              {round.revealedAnswer?.artworkUrl && (
+                // eslint-disable-next-line @next/next/no-img-element -- remote host, no loader configured
+                <img
+                  className="cover"
+                  src={round.revealedAnswer.artworkUrl}
+                  alt=""
+                  onError={(e) => {
+                    e.currentTarget.style.display = "none";
+                  }}
+                />
+              )}
               {round.revealedAnswer && (
                 <p className="muted">
                   Era: {round.revealedAnswer.title} — {round.revealedAnswer.artist}

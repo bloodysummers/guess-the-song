@@ -9,7 +9,7 @@ interface StartBody {
   reconnectToken?: string;
 }
 
-interface TrackRow {
+interface GameTrackRow {
   id: string;
   provider: string;
   provider_ref: string;
@@ -39,7 +39,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
   const { data: game } = await admin
     .from("games")
-    .select("id, session_id, playlist_id, config, rounds_total, status")
+    .select("id, session_id, config, rounds_total, status")
     .eq("id", gameId)
     .maybeSingle();
   if (!game || game.session_id !== sessionId) {
@@ -55,7 +55,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
   const { data: priorRounds } = await admin
     .from("rounds")
-    .select("track_id, round_number")
+    .select("game_track_id, round_number")
     .eq("game_id", gameId);
 
   const finishGame = async () => {
@@ -70,16 +70,17 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     return finishGame();
   }
 
-  const usedTrackIds = (priorRounds ?? []).map((r) => r.track_id as string);
+  const usedTrackIds = (priorRounds ?? []).map((r) => r.game_track_id as string);
   const nextRoundNumber =
     (priorRounds ?? []).reduce((max, r) => Math.max(max, r.round_number as number), 0) + 1;
 
+  // Candidates come from the game's own snapshot, so no-repeat is scoped to this game.
   let query = admin
-    .from("tracks")
+    .from("game_tracks")
     .select(
       "id, provider, provider_ref, answer_title, answer_artist, answer_aliases, year, album, default_start_ms",
     )
-    .eq("playlist_id", game.playlist_id);
+    .eq("game_id", gameId);
   if (usedTrackIds.length) {
     query = query.not("id", "in", `(${usedTrackIds.join(",")})`);
   }
@@ -89,7 +90,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     return finishGame();
   }
 
-  const track = candidates[Math.floor(Math.random() * candidates.length)] as TrackRow;
+  const track = candidates[Math.floor(Math.random() * candidates.length)] as GameTrackRow;
   const audioWindowMs = (game.config as { audioWindowMs: number }).audioWindowMs;
 
   const { data: round, error } = await admin
@@ -98,7 +99,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       session_id: sessionId,
       game_id: gameId,
       round_number: nextRoundNumber,
-      track_id: track.id,
+      game_track_id: track.id,
       audio_window_ms: audioWindowMs,
       phase: "playing",
     })

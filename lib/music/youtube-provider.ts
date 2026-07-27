@@ -5,7 +5,13 @@
  * zero-size player. Client-side only (uses window/document).
  */
 
-import type { MusicProvider, MusicSearchResult, PlayableTrackRef } from "@/lib/music/music-provider";
+import { youtubeArtworkUrl } from "@/lib/music/artwork";
+import type {
+  MusicProvider,
+  MusicSearchResult,
+  PlayableTrackRef,
+  PlaybackError,
+} from "@/lib/music/music-provider";
 import type { MusicProviderKind } from "@/lib/game/types";
 
 interface YTPlayer {
@@ -44,8 +50,11 @@ const YT_ERROR_REASONS: Record<number, string> = {
   2: "invalid video id",
   5: "HTML5 player error",
   100: "video removed or private",
-  101: "embedding disabled by the owner",
-  150: "embedding disabled by the owner",
+  // YouTube reuses 101/150 for every owner-side restriction: embedding disabled,
+  // region blocks, age gates. The reason is shown to the host, so don't claim more
+  // precision than the code carries.
+  101: "restricted by the owner (embedding or region)",
+  150: "restricted by the owner (embedding or region)",
 };
 
 interface YTNamespace {
@@ -112,6 +121,7 @@ export class YouTubeMusicProvider implements MusicProvider {
   private fallbackTimer: ReturnType<typeof setTimeout> | null = null;
   /** Window (ms) to start once audio is actually playing. Null = not armed. */
   private pendingWindowMs: number | null = null;
+  private errorHandler: ((error: PlaybackError) => void) | null = null;
 
   private async ensurePlayer(): Promise<YTPlayer> {
     const YT = await loadApi();
@@ -140,11 +150,15 @@ export class YouTubeMusicProvider implements MusicProvider {
 
   private handleError(code: number): void {
     const reason = YT_ERROR_REASONS[code] ?? `error ${code}`;
-    // The track can't play in our embedded player (e.g. embedding disabled). Surfacing
-    // this in the console for now; the host can skip to the next round.
     console.warn(`[YouTubeMusicProvider] playback error ${code}: ${reason}`);
     this.clearTimers();
     this.pendingWindowMs = null;
+    // Let the caller swap the track: an unplayable video must not strand the round.
+    this.errorHandler?.({ code, reason });
+  }
+
+  onPlaybackError(handler: (error: PlaybackError) => void): void {
+    this.errorHandler = handler;
   }
 
   /**
@@ -208,6 +222,11 @@ export class YouTubeMusicProvider implements MusicProvider {
   async search(_query: string): Promise<MusicSearchResult[]> {
     // Not needed until host-imported playlists; curated playlists carry provider refs.
     return [];
+  }
+
+  artworkUrl(track: PlayableTrackRef): string | null {
+    if (track.provider !== "youtube") return null;
+    return youtubeArtworkUrl(track.providerRef);
   }
 
   private clearTimers(): void {

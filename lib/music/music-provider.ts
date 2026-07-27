@@ -16,6 +16,14 @@ export interface PlayableTrackRef {
   providerRef: string;
 }
 
+/** A track that cannot be played at all, as reported by the provider. */
+export interface PlaybackError {
+  /** Provider-specific code, kept for logging. */
+  code: number;
+  /** Human-readable cause, e.g. "embedding disabled by the owner". */
+  reason: string;
+}
+
 export interface MusicSearchResult {
   provider: MusicProviderKind;
   providerRef: string;
@@ -41,6 +49,23 @@ export interface MusicProvider {
 
   /** Stops playback immediately (e.g. when the first buzz lands). */
   stop(): Promise<void>;
+
+  /**
+   * Cover art for a track, or null if this provider cannot derive one.
+   *
+   * HOST-ONLY: the artwork gives the answer away, so it must never be rendered on
+   * a player's screen while a round is running.
+   */
+  artworkUrl(track: PlayableTrackRef): string | null;
+
+  /**
+   * Registers the handler called when the provider cannot play the current track
+   * (region block, embedding disabled, dead video…). Replaces any previous handler.
+   *
+   * Only HARD failures reach this. A track that plays but happens to be silent
+   * raises nothing — no provider can tell silence from music.
+   */
+  onPlaybackError(handler: (error: PlaybackError) => void): void;
 
   /** Searches the provider catalog (used later for host-imported playlists). */
   search(query: string): Promise<MusicSearchResult[]>;

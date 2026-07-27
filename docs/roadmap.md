@@ -132,7 +132,33 @@ Reorganizado por valor y dependencias. Las "épicas" agrupan varios changes de O
 Regla: primero lo que da valor de juego sin dependencias externas; los providers (que
 necesitan cuentas/API keys y revisión de plataforma) como esfuerzo dedicado aparte.
 
-## Épica A — Modelo de puntuación v2 (fundación) · `add-scoring-v2`
+## Completado adicional (fuera de secuencia, del feedback de juego)
+
+- ✅ **`add-playback-polish`** — botón de ronda final, ventana de audio precisa (timer en
+  `PLAYING`), inicio de fragmento aleatorio (+ manejo de `onError` de YouTube).
+- ✅ **`add-session-game-split`** — Sesión (hub persistente) separada de Juego; marcador por
+  juego + acumulado de sesión; `game_type` para futuros juegos. Desplegado a producción.
+- ✅ **`add-game-track-sources`** — cada juego materializa su propio `game_tracks` desde una
+  fuente pluggable: playlist curada del catálogo **o** URL pública de YouTube / YouTube Music
+  (Data API). Efímero, provider-agnóstico, no legible por `anon`. Cubre D1+D2.
+- ✅ **`add-cover-art`** — portada de la pista en el panel del host durante la ronda, y para
+  todos al revelar la respuesta (misma regla de visibilidad que el título).
+- ✅ **`add-playback-recovery`** — una pista que no se puede reproducir se cambia sola sin
+  consumir ronda; botón del host para otro fragmento aleatorio sin penalización.
+
+### Pendientes chicos detectados
+
+- **`FALLBACK_START_MS` a ciegas** (`lib/music/youtube-provider.ts`): si `getDuration()` no
+  responde en 2 s, salta a 20 s sin saber si la canción dura tanto — en pistas cortas cae más
+  allá del final y suena silencio. Sospechoso, **no medido**. Salió de `add-playback-recovery`;
+  el botón de "otro fragmento" ya deja al host recuperarse mientras tanto.
+- **Playlists privadas de YouTube** — requieren OAuth (`youtube.readonly`, scope sensible con
+  verificación de Google para producción). Descartado por ahora a favor de Spotify. Las **no
+  listadas** ya funcionan con la API key actual.
+
+---
+
+## Épica A — Modelo de puntuación v2 (fundación) · `add-scoring-v2` — ✅ COMPLETA
 
 **Por qué primero:** habilita penalizaciones y boosts para replay y gamificación.
 
@@ -141,13 +167,13 @@ necesitan cuentas/API keys y revisión de plataforma) como esfuerzo dedicado apa
 - Modelo de puntos con "modificadores" (penalización/boost) que otros features aplican.
 - Pequeño; sin dependencias externas. Desbloquea B y F.
 
-## Épica B — Replay / segunda oportunidad · `add-replay`
+## Épica B — Replay / segunda oportunidad · `add-replay` — ✅ COMPLETA
 
 - Botón **Replay** del host cuando se agota la ventana sin buzz (segunda reproducción).
 - Penalización por modo: `speed` → factor reducido / tope; `base` → medio punto.
 - Depende de Épica A.
 
-## Épica C — Modo opción múltiple · `add-multiple-choice-mode`
+## Épica C — Modo opción múltiple · `add-multiple-choice-mode` — ⬅ SIGUIENTE
 
 - Modo auto-validado (sin juez): aparecen N opciones y gana quien acierte más rápido.
 - **Distractores desde los metadatos de la propia playlist** (ya tenemos `answer_title`/

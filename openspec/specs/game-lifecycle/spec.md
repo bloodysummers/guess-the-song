@@ -20,14 +20,16 @@ independent of any game. It SHALL outlive individual games until the host closes
 
 ### Requirement: The host starts a game within a session
 
-The host SHALL start a game within a session by choosing a playlist and configuration
-(scoring mode, difficulty, rounds). The game SHALL belong to the session and carry its own
-state and scoreboard.
+The host SHALL start a game within a session by choosing a **source** (a curated playlist from
+the catalog, or a public YouTube / YouTube Music playlist URL) and a configuration (scoring
+mode, difficulty, rounds). On creation the game SHALL materialize its own track set
+(`game_tracks`) from that source, and SHALL carry its own state and scoreboard.
 
-#### Scenario: Starting a game
+#### Scenario: Starting a game from a source
 
-- **WHEN** the host starts a game with a playlist and config
-- **THEN** a new game is created in the session, active, with its own scoreboard at zero
+- **WHEN** the host starts a game with a valid source and config
+- **THEN** a new active game is created with its own track set materialized and its own
+  scoreboard at zero
 
 #### Scenario: Only the host starts a game
 

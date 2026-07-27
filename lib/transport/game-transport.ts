@@ -10,6 +10,7 @@ import type {
   AnswerReference,
   BonusFlags,
   BuzzQueueEntry,
+  GameSource,
   PlayerPublic,
   PodiumEntry,
   RevealedAnswer,
@@ -55,13 +56,18 @@ export interface CreateSessionResult {
 }
 
 export interface CreateGameInput {
-  playlistId: string;
+  /** Where the game's tracks come from (curated playlist or a YouTube URL). */
+  source: GameSource;
   config: SessionConfig;
   roundsTotal?: number;
 }
 
 export interface CreateGameResult {
   gameId: string;
+  /** Human-readable origin of the materialized track set. */
+  sourceLabel?: string;
+  /** How many tracks the source yielded. */
+  trackCount?: number;
 }
 
 export interface JoinSessionInput {
@@ -98,6 +104,16 @@ export interface BuzzInput {
 }
 
 export interface ReplayInput {
+  roundId: string;
+}
+
+export interface ReplaceTrackInput {
+  roundId: string;
+  /** Why the track failed, for the server log. */
+  reason?: string;
+}
+
+export interface RefragmentInput {
   roundId: string;
 }
 
@@ -202,6 +218,17 @@ export interface GameTransport {
   buzz(input: BuzzInput): Promise<Ack>;
   /** Host replays the audio window before any buzz (applies a scoring penalty). */
   replayRound(input: ReplayInput): Promise<Ack>;
+  /**
+   * The track could not be played at all. Swaps in another track for the SAME round
+   * (no round is consumed) and re-emits `round_host_payload` with it.
+   */
+  replaceRoundTrack(input: ReplaceTrackInput): Promise<Ack>;
+  /**
+   * Host plays a different random fragment of the same track, with NO penalty — the
+   * escape hatch for a fragment that is silent or unguessable. Later penalized
+   * replays then apply to this new fragment.
+   */
+  refragmentRound(input: RefragmentInput): Promise<Ack>;
   judge(input: JudgeInput): Promise<Ack>;
   nextRound(): Promise<StartRoundResult>;
   leave(): Promise<Ack>;
