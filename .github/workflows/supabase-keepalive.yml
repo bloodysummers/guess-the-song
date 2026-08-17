@@ -1,0 +1,31 @@
+# Keeps the free-tier Supabase project active by making a tiny daily API request.
+# Supabase pauses free projects after ~7 days without activity; a daily read resets it.
+#
+# Setup (one-time): add two repo secrets under
+#   GitHub → Settings → Secrets and variables → Actions → New repository secret
+#     SUPABASE_URL       e.g. https://YOUR-REF.supabase.co
+#     SUPABASE_ANON_KEY  the anon / publishable key (already public in the client)
+name: Supabase keepalive
+
+on:
+  schedule:
+    # 12:00 UTC every day (GitHub cron can be delayed a bit — fine for a 7-day window).
+    - cron: "0 12 * * *"
+  workflow_dispatch: {} # allow manual runs from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/playlists?select=id&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}")
+          echo "Supabase responded HTTP $code"
+          # 2xx keeps the project active; anything else fails the run so you get notified.
+          if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+            echo "Unexpected status — Supabase may be paused or misconfigured."
+            exit 1
+          fi
